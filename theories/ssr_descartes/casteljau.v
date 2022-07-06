@@ -2,6 +2,7 @@ From mathcomp Require Import ssreflect ssrfun ssrbool eqtype ssrnat binomial seq
 From mathcomp Require Import fintype bigop ssralg poly ssrnum ssrint rat ssrnum.
 From mathcomp Require Import polyrcf qe_rcf_th realalg.
 Require Import pol poly_normal desc.
+From HB Require Import structures.
 
 (******************************************************************************)
 (*  de_casteljau == De Casteljau's algorithm                                  *)
@@ -554,7 +555,7 @@ by move=> E; rewrite !poly_def; apply: eq_bigr => i _; rewrite E.
 Qed.
 
 Section bernp.
-Variables (R : rcfType) (a b : R) (deg : nat).
+Variables (R : numDomainType) (a b : R) (deg : nat).
 
 (* elements of the Bernstein basis of degree p *)
 Definition bernp (i : nat) : {poly R} :=
@@ -599,6 +600,190 @@ by rewrite horner_exp exprn_gt0 // !hornerE subr_gt0.
 Qed.
 
 End bernp.
+
+From mathcomp Require Import interval matrix.
+From mathcomp Require Import classical_sets set_interval.
+Local Open Scope classical_set_scope.
+
+
+(* NB: already in mathcomp-analysis but with realType, PR in progress *)
+Definition factor (R : numDomainType) (a b x : R) := (x - a) / (b - a).
+
+(* TODO: move to set_interval.v *)
+Lemma factorE (R : numFieldType) (a b x : R) : a != b ->
+  1 - factor a b x = (b - x) / (b - a).
+Proof.
+move=> ab.
+rewrite /factor -(@divrr _ (b - a)) ?unitfE ?subr_eq0 1?eq_sym//.
+by rewrite -mulrBl opprB addrA subrK.
+Qed.
+
+
+Reserved Notation "x %:pr" (at level 0, format "x %:pr").
+
+Module Prob.
+Section prob.
+Variable (R : numDomainType).
+Record t := mk { p :> R ; Op1 : 0 <= p <= 1 }.
+Definition O1 (p : t) := Op1 p.
+Arguments O1 : simpl never.
+End prob.
+Module Exports.
+Section exports.
+Variables (R : numDomainType).
+Canonical prob_subType := Eval hnf in [subType for @p R].
+Local Notation prob := (t R).
+Definition prob_eqMixin := [eqMixin of prob by <:].
+Canonical prob_eqType := Eval hnf in EqType _ prob_eqMixin.
+Definition prob_choiceMixin := [choiceMixin of prob by <:].
+Canonical prob_choiceType := ChoiceType prob prob_choiceMixin.
+Definition prob_porderMixin := [porderMixin of prob by <:].
+Canonical prob_porderType := POrderType ring_display prob prob_porderMixin.
+End exports.
+End Exports.
+End Prob.
+Export Prob.Exports.
+Notation prob := Prob.t.
+Notation "q %:pr" := (@Prob.mk _ q (@Prob.O1 _ _)).
+Coercion Prob.p : prob >-> Num.NumDomain.sort.
+
+Lemma prob_ge0 (R : numDomainType) (p : prob R) : 0 <= p :> R.
+Proof. by case: p => p /= /andP[]. Qed.
+Global Hint Resolve prob_ge0 : core.
+
+Lemma prob_le1 (R : numDomainType) (p : prob R) : p <= 1 :> R.
+Proof. by case: p => p /= /andP[]. Qed.
+Global Hint Resolve prob_le1 : core.
+
+From mathcomp Require Import functions lebesgue_integral.
+
+(* factors for an affine combination *)
+HB.mixin Record isSum1 (R : numDomainType) (n : nat) (f : 'I_n.+1 -> R) := {
+  sum_eq1 : \sum_(i < n.+1) f i = 1 }.
+#[short(type=affine)]
+HB.structure Definition Sum1 (R : numDomainType) (n : nat) :=
+  {f of isSum1 R n f}.
+
+From mathcomp Require Import zmodp.
+Reserved Notation "v '``_' i" (at level 3, i at level 2,
+  left associativity, format "v '``_' i").
+Notation "v '``_' i" := (v (GRing.zero (Zp_zmodType O)) i) : ring_scope.
+
+Definition combination (R : numDomainType)  (T : lmodType R) n
+    (f : 'I_n.+1 -> R) (v : 'rV[T]_n.+1) : T :=
+  \sum_(i < n.+1) f i *: v ``_ i.
+
+(* factors of a convex combination *)
+#[short(type=convn)]
+HB.structure Definition Convn (R : numDomainType) (n : nat) :=
+  {f of isSum1 R n f & NonNegFun 'I_n.+1 f}.
+
+From mathcomp Require Import finmap.
+
+Definition linear_hull_rV
+    (R : numDomainType) (T : lmodType R) n (v : 'rV[T]_n.+1) :=
+  [set combination a v | a in [set: 'I_n.+1 -> R]].
+
+Definition affine_hull_rV
+    (R : numDomainType) (T : lmodType R) n (v : 'rV[T]_n.+1) :=
+  [set combination a v | a in [set: affine R n]].
+
+Definition convex_hull_rV
+    (R : numDomainType) (T : lmodType R) n (v : 'rV[T]_n.+1) :=
+  [set combination a v | a in [set: convn R n]].
+
+Definition vec_in_fset (R : numDomainType) (T : lmodType R)
+  n (v : {fset T}) :=
+  [set w : 'rV[T]_n.+1 | [forall i, w ``_ i \in v] ].
+
+Definition convex_hull
+    (R : numDomainType) (T : lmodType R) (v : {fset T}) :=
+  \bigcup_n [set combination a w | a in [set: convn R n] &
+                                   w in vec_in_fset v].
+
+Lemma convex_hull_rVE
+    (R : numDomainType) (T : lmodType R) n (v : 'rV[T]_n.+1) :
+  convex_hull_rV v =
+  convex_hull [fset v ``_ k | k in 'I_n.+1]%fset.
+Proof.
+apply/seteqP; split.
+  move=> _ [a _ <-].
+  rewrite /convex_hull; exists n => //=; exists a => //=; exists v => //.
+  rewrite /vec_in_fset/=; apply/forallP => /= i.
+  by apply/imfsetP; exists i.
+move=> _ [m _]/= [a _ [w/=] /forallP/= vw <-].
+rewrite /convex_hull_rV/=.
+Admitted.
+
+Definition cone_rV
+    (R : numDomainType) (T : lmodType R) n (v : 'rV[T]_n.+1) :=
+  [set combination a v | a in [set: {nnfun 'I_n.+1 >-> R}]].
+
+(* Bernstein polynomials *)
+Definition Bern (R : numDomainType) n (i : 'I_n.+1) : {poly R} :=
+  bernp 0 1 n i.
+
+Lemma BernE (R : numDomainType) n (i : 'I_n.+1) :
+  Bern R i = 'X ^+ i * (1 - 'X) ^+ (n - i) *+ 'C(n, i).
+Proof. by rewrite /Bern /bernp !(subr0,expr1n,invr1,mul1r). Qed.
+
+Lemma Bern_bernp (R : numFieldType) n (i : 'I_n.+1) (a b x : R) :
+  a != b -> (i <= n)%N ->
+  (Bern R i).[factor a b x] = (bernp a b n i).[x].
+Proof.
+move=> ab ni.
+rewrite BernE/= /bernp !(hornerMn,hornerE,horner_exp,hornerE); congr (_ *+ _).
+rewrite factorE// !expr_div_n !mulrA mulrC !mulrA; congr (_ * _).
+rewrite mulrC mulrA; congr (_ * _).
+rewrite exprB// ?unitfE ?subr_eq0 1?eq_sym// mulrC invf_div mulrC mulrA -exprVn.
+rewrite -exprMn_comm; last by rewrite /GRing.comm mulrC.
+by rewrite mulVf ?subr_eq0 1?eq_sym// expr1n div1r.
+Qed.
+
+Lemma Bern_sum1 (R : numDomainType) n x : \sum_(k < n.+1) (Bern R k).[x] = 1.
+Proof.
+transitivity ((((1 - 'X) + 'X) ^+ n).[x]).
+  rewrite exprDn horner_sum;  apply: eq_bigr => /= i _.
+  by rewrite BernE; rewrite mulrC.
+by rewrite horner_exp !hornerE subrK expr1n.
+Qed.
+
+Lemma Bern_ge0 (R : numDomainType) n (x : prob R) :
+  forall k :'I_n.+1, 0 <= (Bern R k).[x : R].
+Proof.
+move=> k; rewrite BernE hornerMn !hornerE mulrn_wge0//.
+by rewrite !horner_exp mulr_ge0// !hornerE ?exprn_ge0// ?subr_ge0.
+Qed.
+
+Definition eval_Bern (R : numDomainType) n (x : prob R) (i : 'I_n.+1) : R :=
+  (Bern R i).[x : R].
+
+HB.instance Definition _ (R : numDomainType) n (x : prob R) :=
+  @isSum1.Build R n (@eval_Bern R n x) (Bern_sum1 n (x : R)).
+
+HB.instance Definition _ (R : numDomainType) n (x : prob R) :=
+  @IsNonNegFun.Build _ R (@eval_Bern R n x) (@Bern_ge0 R n x).
+
+Definition Bezier_curve
+    (R : numDomainType) (T : lmodType R) n (v : 'rV[T]_n.+1) : set T :=
+  [set combination (fun i => (Bern R i).[t : R]) v | t in [set: prob R]].
+
+Lemma Bezier_curve_convex_hull
+    (R : numDomainType) (T : lmodType R) n (v : 'rV[T]_n.+1) :
+  forall p, p \in Bezier_curve v -> p \in convex_hull_rV v.
+Proof.
+move=> p.
+rewrite in_setE /Bezier_curve/= => -[t _ <-].
+rewrite in_setE/=.
+rewrite convex_hull_rVE.
+rewrite /convex_hull.
+exists n => //=.
+exists [the convn R n of eval_Bern t] => //.
+exists v => //.
+apply/forallP => /= i.
+apply/imfsetP.
+by exists i.
+Qed.
 
 Section BernsteinPols.
 Variables (R : rcfType) (a b : R) (deg : nat).
